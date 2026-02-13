@@ -1,0 +1,124 @@
+chunk#683 - fit_data - record (loc#9 glob#20)
+	chunk
+		index   683
+		offset  28935
+		size    43
+	header
+		local_mesg_num     9
+		time_offset        <none>
+		is_developer_data  no
+	global_mesg_num  20
+	fields (19)
+		name       activity_type
+		value      running
+		units      
+		def_num    42
+		raw_value  1
+		-
+		name       timestamp
+		value      2026-02-13T15:22:34+00:00
+		units      
+		def_num    253
+		raw_value  1139930554
+		-
+		name       position_lat
+		value      32.8638148214668
+		units      deg
+		def_num    0
+		raw_value  392080583
+		-
+		name       position_long
+		value      -97.38329353742301
+		units      deg
+		def_num    1
+		raw_value  -1161827947
+		-
+		name       distance
+		value      1.604
+		units      km
+		def_num    5
+		raw_value  160400
+		-
+		name       heart_rate
+		value      171
+		units      bpm
+		def_num    3
+		raw_value  171
+		-
+		name       enhanced_altitude
+		value      229.0
+		units      m
+		def_num    78
+		raw_value  229.0
+		-
+		name       altitude
+		value      229.0
+		units      m
+		def_num    2
+		raw_value  3645
+		-
+		name       enhanced_speed
+		value      8.330400000000001
+		units      km/h
+		def_num    73
+		raw_value  2.314
+		-
+		name       speed
+		value      8.330400000000001
+		units      km/h
+		def_num    6
+		raw_value  2314
+		-
+		name       cadence
+		value      73
+		units      rpm
+		def_num    4
+		raw_value  73
+		-
+		name       power
+		value      190
+		units      watts
+		def_num    7
+		raw_value  190
+		-
+		name       accumulated_power
+		value      129800
+		units      watts
+		def_num    29
+		raw_value  129800
+		-
+		name       stance_time
+		value      315.0
+		units      ms
+		def_num    41
+		raw_value  3150
+		-
+		name       vertical_oscillation
+		value      88.0
+		units      mm
+		def_num    39
+		raw_value  880
+		-
+		name       vertical_ratio
+		value      9.3
+		units      percent
+		def_num    83
+		raw_value  930
+		-
+		name       step_length
+		value      950.0
+		units      mm
+		def_num    85
+		raw_value  9500
+		-
+		name       temperature
+		value      <none>
+		units      C
+		def_num    13
+		raw_value  <none>
+		-
+		name       Effort Pace
+		value      2.312999963760376
+		units      m/s
+		def_num    16
+		raw_value  2.312999963760376

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HUD Editor</title>
+<style>
+  body { margin:0; padding:0; background:#111; color:#fff; font-family:sans-serif; }
+  #canvas { width:100vw; height:100vh; position:relative; background:#222; overflow:hidden; }
+  .hud-field {
+    position:absolute;
+    padding:4px 8px;
+    background:rgba(255,255,255,0.1);
+    border:1px solid #fff;
+    cursor:move;
+    user-select:none;
+  }
+</style>
+</head>
+<body>
+<div id="canvas"></div>
+<button onclick="saveLayout()">Save Layout</button>
+<pre id="output"></pre>
+
+<script>
+const fields = [
+  "activity_type","timestamp","position_lat","position_long","distance","heart_rate",
+  "speed","enhanced_speed","stance_time","vertical_oscillation","vertical_ratio","step_length","Effort Pace"
+];
+
+const canvas = document.getElementById("canvas");
+const layout = {};  // store positions and scale
+
+fields.forEach(f => {
+  const div = document.createElement("div");
+  div.className = "hud-field";
+  div.innerText = f;
+  div.style.left = Math.random()*500 + "px";
+  div.style.top = Math.random()*500 + "px";
+  div.dataset.field = f;
+  div.dataset.scale = 1;
+
+  // Make draggable
+  let offsetX=0, offsetY=0, dragging=false;
+  div.addEventListener("mousedown", e => {
+    dragging = true;
+    offsetX = e.offsetX;
+    offsetY = e.offsetY;
+  });
+  document.addEventListener("mousemove", e => {
+    if(dragging){
+      div.style.left = e.clientX - offsetX + "px";
+      div.style.top = e.clientY - offsetY + "px";
+    }
+  });
+  document.addEventListener("mouseup", e => { dragging=false; });
+
+  // Make resizable (scale with mouse wheel)
+  div.addEventListener("wheel", e => {
+    e.preventDefault();
+    let scale = parseFloat(div.dataset.scale);
+    scale += e.deltaY > 0 ? -0.05 : 0.05;
+    scale = Math.max(0.1, Math.min(5, scale));
+    div.dataset.scale = scale;
+    div.style.transform = `scale(${scale})`;
+  });
+
+  canvas.appendChild(div);
+  layout[f] = {x:parseFloat(div.style.left), y:parseFloat(div.style.top), scale:1};
+});
+
+function saveLayout(){
+  fields.forEach(f => {
+    const div = document.querySelector(`[data-field='${f}']`);
+    layout[f] = {
+      x: parseFloat(div.style.left),
+      y: parseFloat(div.style.top),
+      scale: parseFloat(div.dataset.scale)
+    };
+  });
+  document.getElementById("output").innerText = JSON.stringify(layout, null, 2);
+
+  // Optional: POST to Python
+  /*
+  fetch('/save_layout',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(layout)
+  });
+  */
+}
+</script>
+</body>
+</html>
