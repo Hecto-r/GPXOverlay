@@ -1,17 +1,20 @@
 import fitdecode
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-import math
 import subprocess
 import argparse
-from collections import deque  # Added for smoothing
+import os
+import sys
+from collections import deque
+from datetime import timedelta
 
 # -------------------------
 # CONFIGURATION & ASSETS
 # -------------------------
 FONT_PATH = r"C:\Users\Hector\AppData\Local\Microsoft\Windows\Fonts\Montserrat-Bold.ttf"
 
-def get_fonts(base_size=40):
+def get_scaled_fonts(base_size):
+    """Generates a dictionary of fonts scaled by a base size multiplier."""
     try:
         return {
             'huge': ImageFont.truetype(FONT_PATH, int(base_size * 2.0)),    
@@ -23,155 +26,186 @@ def get_fonts(base_size=40):
     except:
         return {k: ImageFont.load_default() for k in ['huge', 'large', 'medium', 'small', 'tiny']}
 
-# -------------------------
-# HELPERS: Data & Pace
-# -------------------------
-def get_val(rec, keys, default=0.0):
-    for key in keys:
-        val = rec.get(key)
-        if val is not None:
-            return float(val)
-    return default
-
-def get_pace_str(speed_mps, use_us):
-    if speed_mps <= 0.3:
-        return "--:--"
-    total_seconds = (1609.34 if use_us else 1000.0) / speed_mps
-    minutes = int(total_seconds // 60)
-    seconds = int(total_seconds % 60)
-    return f"{minutes}:{seconds:02d}"
+def safe_get(rec, key, default=0.0):
+    """Safely extracts a value from the FIT record, ensuring it's never None."""
+    val = rec.get(key)
+    if val is None:
+        return float(default)
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return float(default)
 
 # -------------------------
-# HUD DRAWING FUNCTIONS
+# COMPONENT DRAWING FUNCTIONS
 # -------------------------
 
-def draw_speedometer(draw, speed_mps, center, fonts, use_us):
-    radius = 115 
-    pace_str = get_pace_str(speed_mps, use_us)
+def draw_timer(draw, elapsed_str, y_pos, scale):
+    fonts = get_scaled_fonts(int(40 * scale))
+    draw.text((1920//2, y_pos), elapsed_str, fill="white", font=fonts['huge'], anchor="ma")
+
+def draw_speedometer(draw, speed_mps, pos, scale, use_us):
+    fonts = get_scaled_fonts(int(40 * scale))
+    x, y = pos
+    rad = int(115 * scale)
     
-    draw.arc([center[0]-radius, center[1]-radius, center[0]+radius, center[1]+radius], 
-             start=135, end=405, fill=(255, 255, 255, 50), width=12)
+    # Background Arc
+    draw.arc([x-rad, y-rad, x+rad, y+rad], 135, 405, fill=(255, 255, 255, 50), width=int(12*scale))
     
+    # Progress Arc (Max speed normalized to 5.0 m/s)
     val_pc = min(speed_mps / 5.0, 1.0)
-    draw.arc([center[0]-radius, center[1]-radius, center[0]+radius, center[1]+radius], 
-             start=135, end=135 + (270 * val_pc), fill=(0, 255, 127, 255), width=14)
+    draw.arc([x-rad, y-rad, x+rad, y+rad], 135, 135 + (270 * val_pc), fill=(0, 255, 127, 255), width=int(14*scale))
     
-    draw.text(center, pace_str, fill="white", font=fonts['huge'], anchor="mm")
-    unit_label = "PACE /MI" if use_us else "PACE /KM"
-    draw.text((center[0], center[1]+50), unit_label, fill=(200, 200, 200), font=fonts['small'], anchor="mm")
+    # Pace Calculation
+    total_sec = (1609.34 if use_us else 1000.0) / max(speed_mps, 0.1)
+    pace_str = f"{int(total_sec // 60)}:{int(total_sec % 60):02d}" if speed_mps > 0.3 else "--:--"
+    
+    draw.text((x, y), pace_str, fill="white", font=fonts['huge'], anchor="mm")
+    draw.text((x, y + int(50*scale)), "PACE /MI" if use_us else "PACE /KM", fill=(200, 200, 200), font=fonts['small'], anchor="mm")
 
-def draw_hr_gauge(draw, hr, pos, fonts):
+def draw_hr_gauge(draw, hr, pos, scale):
+    fonts = get_scaled_fonts(int(40 * scale))
+    x, y = pos
+    # Zone definitions: (Min, Max, Color)
     zones = [
         (0, 163, (150, 150, 150)), (164, 172, (0, 160, 255)), 
         (173, 182, (0, 255, 100)), (183, 192, (255, 160, 0)), (193, 197, (255, 30, 30))
     ]
-    bar_w, bar_h, spacing = 18, 45, 8
+    bh, sp, bw = int(45*scale), int(8*scale), int(18*scale)
+    
     for i, (low, high, color) in enumerate(zones):
-        is_active = low <= hr <= high
-        alpha = 255 if is_active else 60
-        y_off = pos[1] - (i * (bar_h + spacing))
-        draw.rectangle([pos[0], y_off, pos[0]+bar_w, y_off+bar_h], fill=(*color, alpha))
-        if is_active:
-            draw.text((pos[0] + 35, y_off + bar_h/2), f"{int(hr)}", fill="white", font=fonts['large'], anchor="lm")
-            draw.text((pos[0] + 35, y_off + bar_h/2 + 25), "BPM", fill="white", font=fonts['tiny'], anchor="lm")
+        alpha = 255 if low <= hr <= high else 60
+        y_off = y - (i * (bh + sp))
+        draw.rectangle([x, y_off, x+bw, y_off+bh], fill=(*color, alpha))
+        if low <= hr <= high:
+            draw.text((x + int(35*scale), y_off + bh//2), f"{int(hr)}", fill="white", font=fonts['large'], anchor="lm")
 
-def draw_gps_map(draw, coords, center, size=180):
-    if len(coords) < 2: return
-    lats, lons = zip(*coords)
+def draw_gps_map(draw, coord_history, pos, scale):
+    if len(coord_history) < 2: return
+    x, y = pos
+    m_size = int(180 * scale)
+    
+    lats, lons = zip(*coord_history)
     span = max(max(lats)-min(lats), max(lons)-min(lons), 0.0001)
-    def to_pixel(lat, lon):
-        px = center[0] + (lon - (min(lons)+max(lons))/2) / span * size
-        py = center[1] - (lat - (min(lats)+max(lats))/2) / span * size
-        return (px, py)
-    points = [to_pixel(lat, lon) for lat, lon in coords]
-    draw.line(points, fill=(255, 255, 255, 180), width=3)
-    draw.ellipse([points[-1][0]-5, points[-1][1]-5, points[-1][0]+5, points[-1][1]+5], fill=(255, 0, 0, 255))
+    
+    pts = [(x + (ln - (min(lons)+max(lons))/2) / span * m_size, 
+            y - (lt - (min(lats)+max(lats))/2) / span * m_size) for lt, ln in coord_history]
+    
+    draw.line(pts, fill=(255, 255, 255, 180), width=max(1, int(3*scale)))
+    # Current Position Indicator
+    draw.ellipse([pts[-1][0]-5, pts[-1][1]-5, pts[-1][0]+5, pts[-1][1]+5], fill=(255, 0, 0, 255))
+
+def draw_metrics_grid(draw, data, selected, width=1920):
+    fonts = get_scaled_fonts(40)
+    active = [(k, data[k][0], data[k][1]) for k in selected if k in data]
+    if not active: return
+    
+    spacing = width // (len(active) + 1)
+    for i, (label, val, unit) in enumerate(active):
+        lx = spacing * (i + 1)
+        draw.text((lx, 1080-105), label.upper(), fill=(200, 200, 200), font=fonts['tiny'], anchor="ma")
+        draw.text((lx, 1080-70), f"{val} {unit}", fill="white", font=fonts['medium'], anchor="ma")
 
 # -------------------------
 # MAIN GENERATOR
 # -------------------------
 
-def generate_overlay(fit_file, output_file, width=1920, height=1080, fps=30, use_us=True):
-    fonts = get_fonts(40)
-    records = []
-    
+def generate_overlay(args):
     print("Reading FIT data...")
-    with fitdecode.FitReader(fit_file) as fit:
-        for frame in fit:
-            if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == "record":
-                rec = {}
-                for field in frame.fields:
-                    if field.name in ['speed', 'enhanced_speed']:
-                        rec[field.name] = field.raw_value
-                    else:
-                        rec[field.name] = field.value
-                records.append(rec)
+    with fitdecode.FitReader(args.fit) as fit:
+        records = [{f.name: (f.raw_value if f.name in ['speed', 'enhanced_speed'] else f.value) 
+                   for f in frame.fields} for frame in fit if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == "record"]
 
+    total = len(records)
+    if total == 0:
+        print("Error: No records found.")
+        return
+
+    # FFmpeg setup
     ffmpeg_cmd = [
-        "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps),
-        "-i", "-", "-c:v", "h264_nvenc", "-preset", "fast", "-b:v", "15M", output_file
+        "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1920x1080", "-r", "30",
+        "-i", "-", "-c:v", "h264_nvenc", "-preset", "fast", "-b:v", "15M", 
+        "-pix_fmt", "yuv420p", args.output
     ]
     ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
 
-    coord_history = []
-    # Smoothing buffer: 5 seconds (5 * fps frames)
-    speed_buffer = deque(maxlen=int(5 * fps)) 
-    total = len(records)
+    coord_history = deque(maxlen=10000)
+    speed_buffer = deque(maxlen=5)
+    selected_metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
 
+    print(f"Rendering {total} frames...")
     for idx, rec in enumerate(records):
-        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        # 1. Smoothing Logic
-        raw_mps = get_val(rec, ["enhanced_speed", "speed"])
+        # Data processing with safe fallbacks
+        raw_mps = safe_get(rec, 'enhanced_speed', safe_get(rec, 'speed', 0.0))
         speed_buffer.append(raw_mps)
         smoothed_mps = sum(speed_buffer) / len(speed_buffer)
-
-        # 2. Data Processing
-        dist_km = get_val(rec, ["distance"]) / 1000.0
-        dist_display = dist_km * 0.621371 if use_us else dist_km
-        alt_display = get_val(rec, ["enhanced_altitude", "altitude"]) * (3.28084 if use_us else 1.0)
-        hr = get_val(rec, ["heart_rate"])
-
+        
+        hr = safe_get(rec, 'heart_rate', 0.0)
         lat, lon = rec.get("position_lat"), rec.get("position_long")
-        if lat and lon: coord_history.append((lat, lon))
+        if lat is not None: 
+            coord_history.append((lat, lon))
 
-        # 3. Render
-        draw.rectangle([0, height-130, width, height], fill=(0, 0, 0, 180)) 
+        # Canvas preparation
+        overlay = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        draw.rectangle([0, 1080-130, 1920, 1080], fill=(0, 0, 0, 180))
+
+        # Component Drawing
+        draw_timer(draw, str(timedelta(seconds=idx)), args.timer_y, args.timer_scale)
+        draw_speedometer(draw, smoothed_mps, (args.pace_x, args.pace_y), args.pace_scale, args.us)
+        draw_hr_gauge(draw, hr, (args.hr_x, args.hr_y), args.hr_scale)
+        draw_gps_map(draw, list(coord_history), (args.map_x, args.map_y), args.map_scale)
         
-        draw_speedometer(draw, smoothed_mps, (220, height-280), fonts, use_us)
-        draw_hr_gauge(draw, hr, (60, height-380), fonts)
-        draw_gps_map(draw, coord_history, (width-220, height-280))
-
-        metrics = [
-            ("Distance", f"{dist_display:.2f}", "MI" if use_us else "KM"),
-            ("Altitude", f"{alt_display:.0f}", "FT" if use_us else "M"),
-            ("Cadence", f"{int(get_val(rec, ['cadence']))}", "SPM"),
-            ("Power", f"{int(get_val(rec, ['power']))}", "W"),
-            ("Stance", f"{get_val(rec, ['stance_time']):.0f}", "MS"),
-            ("Oscillation", f"{get_val(rec, ['vertical_oscillation']):.1f}", "MM")
-        ]
+        # Grid Data Preparation
+        dist_raw = safe_get(rec, 'distance', 0.0)
+        alt_raw = safe_get(rec, 'altitude', safe_get(rec, 'enhanced_altitude', 0.0))
         
-        spacing = width // (len(metrics) + 1)
-        for i, (label, val, unit) in enumerate(metrics):
-            x = spacing * (i + 1)
-            draw.text((x, height-105), label.upper(), fill=(200, 200, 200), font=fonts['tiny'], anchor="ma")
-            draw.text((x, height-70), f"{val} {unit}", fill="white", font=fonts['medium'], anchor="ma")
+        m_data = {
+            "Distance": (f"{(dist_raw/1000.0)*(0.621371 if args.us else 1.0):.2f}", "MI" if args.us else "KM"),
+            "Altitude": (f"{alt_raw*(3.28084 if args.us else 1.0):.0f}", "FT" if args.us else "M"),
+            "Cadence": (f"{int(safe_get(rec, 'cadence', 0.0))}", "SPM"),
+            "Power": (f"{int(safe_get(rec, 'power', 0.0))}", "W"),
+            "Stance": (f"{safe_get(rec, 'stance_time', 0.0):.0f}", "MS"),
+            "Oscillation": (f"{safe_get(rec, 'vertical_oscillation', 0.0):.1f}", "MM")
+        }
+        draw_metrics_grid(draw, m_data, selected_metrics)
 
-        final_frame = Image.new("RGB", (width, height), (0, 0, 0))
-        final_frame.paste(overlay, (0, 0), overlay)
+        # Output to FFmpeg
+        final = Image.new("RGB", (1920, 1080), (0, 0, 0))
+        final.paste(overlay, (0, 0), overlay)
+        f_bytes = final.tobytes()
+        
+        # Write 30 frames per 1 second of FIT data to maintain sync
+        for _ in range(30): 
+            ffmpeg.stdin.write(f_bytes)
 
-        ffmpeg.stdin.write(final_frame.tobytes())
-        if idx % 100 == 0:
-            print(f"Progress: {idx}/{total}")
+        # Update Progress
+        if idx % 10 == 0:
+            with open("progress.txt", "w") as f: 
+                f.write(str(int((idx/total)*100)))
 
     ffmpeg.stdin.close()
     ffmpeg.wait()
+    if os.path.exists("progress.txt"): 
+        os.remove("progress.txt")
+    print("\nRender Complete!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--fit", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--us", action="store_true")
-    args = parser.parse_args()
-    generate_overlay(args.fit, args.output, use_us=args.us)
+    parser.add_argument("--timer_y", type=int, default=60)
+    parser.add_argument("--timer_scale", type=float, default=1.0)
+    parser.add_argument("--pace_x", type=int, default=300)
+    parser.add_argument("--pace_y", type=int, default=750)
+    parser.add_argument("--pace_scale", type=float, default=1.0)
+    parser.add_argument("--hr_x", type=int, default=80)
+    parser.add_argument("--hr_y", type=int, default=650)
+    parser.add_argument("--hr_scale", type=float, default=1.0)
+    parser.add_argument("--map_x", type=int, default=1650)
+    parser.add_argument("--map_y", type=int, default=750)
+    parser.add_argument("--map_scale", type=float, default=1.0)
+    parser.add_argument("--metrics", type=str, default="Distance,Altitude")
+    
+    generate_overlay(parser.parse_args())
