@@ -44,7 +44,7 @@ def draw_timer(draw, elapsed_str, y_pos, scale):
     fonts = get_scaled_fonts(int(40 * scale))
     draw.text((1920//2, y_pos), elapsed_str, fill="white", font=fonts['huge'], anchor="ma")
 
-def draw_speedometer(draw, speed_mps, pos, scale, use_us):
+def draw_speedometer(draw, speed_mps, pos, scale, use_us, activity_type="running"):
     fonts = get_scaled_fonts(int(40 * scale))
     x, y = pos
     rad = int(115 * scale)
@@ -52,16 +52,47 @@ def draw_speedometer(draw, speed_mps, pos, scale, use_us):
     # Background Arc
     draw.arc([x-rad, y-rad, x+rad, y+rad], 135, 405, fill=(255, 255, 255, 50), width=int(12*scale))
     
-    # Progress Arc (Max speed normalized to 5.0 m/s)
-    val_pc = min(speed_mps / 5.0, 1.0)
+    # Determine metrics based on activity type
+    if activity_type == "swimming":
+        max_speed_mps = 2.0 # Olympic pace max
+        if use_us:
+            total_sec = 91.44 / max(speed_mps, 0.1) # 100 Yards
+            label_str = "PACE /100Y"
+        else:
+            total_sec = 100.0 / max(speed_mps, 0.1) # 100 Meters
+            label_str = "PACE /100M"
+        
+        main_str = f"{int(total_sec // 60)}:{int(total_sec % 60):02d}" if speed_mps > 0.1 else "--:--"
+
+    elif activity_type == "cycling":
+        max_speed_mps = 16.0 # ~35 mph max
+        if use_us:
+            speed_val = speed_mps * 2.23694 # m/s to mph
+            label_str = "SPEED MPH"
+        else:
+            speed_val = speed_mps * 3.6 # m/s to km/h
+            label_str = "SPEED KM/H"
+            
+        main_str = f"{speed_val:.1f}" if speed_mps > 0.3 else "0.0"
+
+    else: # Default to running
+        max_speed_mps = 5.0 # ~5:20/mi max
+        if use_us:
+            total_sec = 1609.34 / max(speed_mps, 0.1)
+            label_str = "PACE /MI"
+        else:
+            total_sec = 1000.0 / max(speed_mps, 0.1)
+            label_str = "PACE /KM"
+            
+        main_str = f"{int(total_sec // 60)}:{int(total_sec % 60):02d}" if speed_mps > 0.3 else "--:--"
+
+    # Progress Arc
+    val_pc = min(max(speed_mps, 0.0) / max_speed_mps, 1.0)
     draw.arc([x-rad, y-rad, x+rad, y+rad], 135, 135 + (270 * val_pc), fill=(0, 255, 127, 255), width=int(14*scale))
     
-    # Pace Calculation
-    total_sec = (1609.34 if use_us else 1000.0) / max(speed_mps, 0.1)
-    pace_str = f"{int(total_sec // 60)}:{int(total_sec % 60):02d}" if speed_mps > 0.3 else "--:--"
-    
-    draw.text((x, y), pace_str, fill="white", font=fonts['huge'], anchor="mm")
-    draw.text((x, y + int(50*scale)), "PACE /MI" if use_us else "PACE /KM", fill=(200, 200, 200), font=fonts['small'], anchor="mm")
+    # Draw Text
+    draw.text((x, y), main_str, fill="white", font=fonts['huge'], anchor="mm")
+    draw.text((x, y + int(50*scale)), label_str, fill=(200, 200, 200), font=fonts['small'], anchor="mm")
 
 def draw_hr_gauge(draw, hr, pos, scale):
     fonts = get_scaled_fonts(int(40 * scale))
@@ -134,7 +165,12 @@ def generate_overlay(args):
     selected_metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
 
     print(f"Rendering {total} frames...")
+    current_activity = "running" # Fallback default
     for idx, rec in enumerate(records):
+        # Update activity type if it exists in this record
+        if 'activity_type' in rec:
+            current_activity = rec['activity_type']
+            
         # Data processing with safe fallbacks
         raw_mps = safe_get(rec, 'enhanced_speed', safe_get(rec, 'speed', 0.0))
         speed_buffer.append(raw_mps)
@@ -152,7 +188,7 @@ def generate_overlay(args):
 
         # Component Drawing
         draw_timer(draw, str(timedelta(seconds=idx)), args.timer_y, args.timer_scale)
-        draw_speedometer(draw, smoothed_mps, (args.pace_x, args.pace_y), args.pace_scale, args.us)
+        draw_speedometer(draw, smoothed_mps, (args.pace_x, args.pace_y), args.pace_scale, args.us, current_activity)
         draw_hr_gauge(draw, hr, (args.hr_x, args.hr_y), args.hr_scale)
         draw_gps_map(draw, list(coord_history), (args.map_x, args.map_y), args.map_scale)
         
