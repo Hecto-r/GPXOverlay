@@ -94,22 +94,36 @@ def draw_speedometer(draw, speed_mps, pos, scale, use_us, activity_type="running
     draw.text((x, y), main_str, fill="white", font=fonts['huge'], anchor="mm")
     draw.text((x, y + int(50*scale)), label_str, fill=(200, 200, 200), font=fonts['small'], anchor="mm")
 
-def draw_hr_gauge(draw, hr, pos, scale):
+def draw_hr_gauge(draw, hr, pos, scale, max_hr):
     fonts = get_scaled_fonts(int(40 * scale))
     x, y = pos
-    # Zone definitions: (Min, Max, Color)
+    # Adaptive Zones based on Max HR
     zones = [
-        (0, 163, (150, 150, 150)), (164, 172, (0, 160, 255)), 
-        (173, 182, (0, 255, 100)), (183, 192, (255, 160, 0)), (193, 197, (255, 30, 30))
+        (0, 0.60*max_hr, (150, 150, 150)),   # Zone 1
+        (0.60*max_hr, 0.70*max_hr, (0, 160, 255)), 
+        (0.70*max_hr, 0.80*max_hr, (0, 255, 100)), 
+        (0.80*max_hr, 0.90*max_hr, (255, 160, 0)), 
+        (0.90*max_hr, max_hr, (255, 30, 30))
     ]
     bh, sp, bw = int(45*scale), int(8*scale), int(18*scale)
-    
     for i, (low, high, color) in enumerate(zones):
         alpha = 255 if low <= hr <= high else 60
         y_off = y - (i * (bh + sp))
         draw.rectangle([x, y_off, x+bw, y_off+bh], fill=(*color, alpha))
         if low <= hr <= high:
             draw.text((x + int(35*scale), y_off + bh//2), f"{int(hr)}", fill="white", font=fonts['large'], anchor="lm")
+
+def draw_power_gauge(draw, power, pos, scale, ftp):
+    fonts = get_scaled_fonts(int(40 * scale))
+    x, y = pos
+    rad = int(115 * scale)
+    # Background
+    draw.arc([x-rad, y-rad, x+rad, y+rad], 135, 405, fill=(255, 255, 255, 50), width=int(12*scale))
+    # Progress (relative to FTP)
+    val_pc = min(power / (ftp * 1.5), 1.0) # Scale to 150% of FTP
+    draw.arc([x-rad, y-rad, x+rad, y+rad], 135, 135 + (270 * val_pc), fill=(255, 215, 0, 255), width=int(14*scale))
+    draw.text((x, y), f"{int(power)}", fill="white", font=fonts['huge'], anchor="mm")
+    draw.text((x, y + int(50*scale)), "WATTS", fill=(200, 200, 200), font=fonts['small'], anchor="mm")
 
 def draw_gps_map(draw, coord_history, pos, scale):
     if len(coord_history) < 2: return
@@ -125,6 +139,26 @@ def draw_gps_map(draw, coord_history, pos, scale):
     draw.line(pts, fill=(255, 255, 255, 180), width=max(1, int(3*scale)))
     # Current Position Indicator
     draw.ellipse([pts[-1][0]-5, pts[-1][1]-5, pts[-1][0]+5, pts[-1][1]+5], fill=(255, 0, 0, 255))
+
+def draw_lap_history(draw, laps, use_us, activity_type):
+    if not laps: return
+    fonts = get_scaled_fonts(25)
+    x_start = 1750
+    y_start = 150
+    
+    draw.text((x_start, y_start - 30), "LAPS", fill=(200, 200, 200), font=fonts['small'])
+    
+    for i, lap in enumerate(laps[-10:]): # Show last 10 laps
+        y_off = y_start + (i * 35)
+        # Choose label based on activity
+        if activity_type == "swimming":
+            label = f"L{i+1}: {lap['pace']} /100m"
+        else:
+            unit = "mi" if use_us else "km"
+            label = f"L{i+1}: {lap['pace']} /{unit}"
+            
+        draw.rectangle([x_start, y_off, x_start + 150, y_off + 30], fill=(0, 0, 0, 100))
+        draw.text((x_start + 5, y_off + 5), label, fill="white", font=fonts['small'])
 
 def draw_metrics_grid(draw, data, selected, width=1920):
     fonts = get_scaled_fonts(40)
@@ -144,8 +178,12 @@ def draw_metrics_grid(draw, data, selected, width=1920):
 def generate_overlay(args):
     print("Reading FIT data...")
     with fitdecode.FitReader(args.fit) as fit:
-        records = [{f.name: (f.raw_value if f.name in ['speed', 'enhanced_speed'] else f.value) 
-                   for f in frame.fields} for frame in fit if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == "record"]
+        all_frames = list(fit)
+
+    # Extract the records for the overlay data
+    records = [{f.name: (f.raw_value if f.name in ['speed', 'enhanced_speed'] else f.value) 
+               for f in frame.fields} for frame in all_frames 
+               if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == "record"]
 
     total = len(records)
     if total == 0:
@@ -165,12 +203,32 @@ def generate_overlay(args):
     selected_metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
 
     print(f"Rendering {total} frames...")
-    current_activity = "running" # Fallback default
+    # Initialize trackers
+    laps = []
+    last_lap_dist = 0.0
+    current_activity = None 
+
+    # Look for the 'lap' frame to identify the sport
+    for frame in all_frames:
+        if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == "lap":
+            # Extract 'sport' from the lap message
+            sport_field = next((f.value for f in frame.fields if f.name == "sport"), None)
+            if sport_field:
+                current_activity = str(sport_field).lower()
+                break # Found the session sport, move on
+
+    # Define the lap trigger based on the identified sport
+    if current_activity == "swimming":
+        lap_trigger = 91.44 if args.us else 100.0
+    elif current_activity == "cycling":
+        lap_trigger = 1609.34 if args.us else 1000.0
+    else:
+        # Default for running or any other sport
+        lap_trigger = 1609.34 if args.us else 1000.0
+
+    print(f"Activity identified as: {current_activity}")
+
     for idx, rec in enumerate(records):
-        # Update activity type if it exists in this record
-        if 'activity_type' in rec:
-            current_activity = rec['activity_type']
-            
         # Data processing with safe fallbacks
         raw_mps = safe_get(rec, 'enhanced_speed', safe_get(rec, 'speed', 0.0))
         speed_buffer.append(raw_mps)
@@ -181,6 +239,19 @@ def generate_overlay(args):
         if lat is not None: 
             coord_history.append((lat, lon))
 
+        dist_total = safe_get(rec, 'distance', 0.0)
+        
+        # Lap Detection
+        if (dist_total - last_lap_dist) >= lap_trigger:
+            prev_idx = laps[-1]['end_idx'] if laps else 0
+            lap_time_sec = idx - prev_idx
+            
+            laps.append({
+                'pace': f"{int(lap_time_sec // 60)}:{int(lap_time_sec % 60):02d}",
+                'end_idx': idx
+            })
+            last_lap_dist = dist_total
+
         # Canvas preparation
         overlay = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
@@ -189,8 +260,11 @@ def generate_overlay(args):
         # Component Drawing
         draw_timer(draw, str(timedelta(seconds=idx)), args.timer_y, args.timer_scale)
         draw_speedometer(draw, smoothed_mps, (args.pace_x, args.pace_y), args.pace_scale, args.us, current_activity)
-        draw_hr_gauge(draw, hr, (args.hr_x, args.hr_y), args.hr_scale)
+        draw_hr_gauge(draw, hr, (args.hr_x, args.hr_y), args.hr_scale, args.max_hr)
         draw_gps_map(draw, list(coord_history), (args.map_x, args.map_y), args.map_scale)
+        draw_lap_history(draw, laps, args.us, current_activity)
+        if current_activity == "cycling" and 'power' in rec:
+            draw_power_gauge(draw, safe_get(rec, 'power', 0), (args.pace_x + 300, args.pace_y), args.pace_scale, args.ftp)
         
         # Grid Data Preparation
         dist_raw = safe_get(rec, 'distance', 0.0)
@@ -243,5 +317,7 @@ if __name__ == "__main__":
     parser.add_argument("--map_y", type=int, default=750)
     parser.add_argument("--map_scale", type=float, default=1.0)
     parser.add_argument("--metrics", type=str, default="Distance,Altitude")
+    parser.add_argument("--ftp", type=int, default=250)
+    parser.add_argument("--max_hr", type=int, default=190)
     
     generate_overlay(parser.parse_args())

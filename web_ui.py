@@ -29,6 +29,10 @@ with st.sidebar:
     use_us = st.checkbox("US Units", True)
     metrics_list = ["Distance", "Altitude", "Cadence", "Power", "Stance", "Oscillation"]
     selected = st.multiselect("Visible Data", metrics_list, default=["Distance", "Altitude", "Cadence"])
+    st.divider()
+    st.header("⚙️ Athlete Settings")
+    ftp = st.number_input("FTP (Watts)", value=225)
+    max_hr = st.number_input("Max Heart Rate", value=205)
 
 st.header("2. Layout & Scale")
 c1, c2, c3 = st.columns(3)
@@ -113,7 +117,9 @@ if st.button("🚀 START RENDER"):
             "--pace_x", str(p_x), "--pace_y", str(p_y), "--pace_scale", str(p_s),
             "--hr_x", str(h_x), "--hr_y", str(h_y), "--hr_scale", str(h_s),
             "--map_x", str(m_x), "--map_y", str(m_y), "--map_scale", str(m_s),
-            "--metrics", ",".join(selected)
+            "--metrics", ",".join(selected),
+            "--ftp", str(ftp),
+            "--max_hr", str(max_hr)
         ]
         if use_us: cmd.append("--us")
         
